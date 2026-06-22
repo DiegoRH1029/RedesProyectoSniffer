@@ -1,4 +1,12 @@
-// --- PACKET SNIFFER - PROYECTO REDES ---
+// --- PACKET SNIFFER - PROYECTO REDES SO: linux---
+// Integrantes 
+/*
+Diego Enrique Reyes Hernández
+José Ángel Carmona González
+Gustavo De Luna Dorantes
+Ximena Montserrat Ramos Campos
+
+*/
 // Programa de captura y analisis profundo de paquetes de red.
 // Utiliza libpcap para el modo promiscuo y Qt5 para la interfaz grafica.
 
@@ -11,7 +19,7 @@
 #include <fstream>            // Para crear y escribir archivos en el disco duro (Exportar CSV)
 #include <pcap.h>             // Libreria core de Linux para capturar trafico de red
 
-// Librerias de red de Linux (estructuras de datos para leer los bytes)
+// Librerias de red de Linux (estructuras de datos para leer los bytes a bajo nivel)
 #include <netinet/in.h>       // Define familias de direcciones de red (AF_INET, etc)
 #include <netinet/if_ether.h> // Define la cabecera Ethernet (Capa 2)
 #include <netinet/ip.h>       // Define la cabecera IPv4 (Capa 3)
@@ -25,7 +33,7 @@ using namespace std;
 // --- 2. ESTRUCTURAS (STRUCTS) ---
 
 // Plantilla que usaremos para guardar la informacion util de cada paquete que atrapamos.
-// En lugar de guardar basura, extraemos lo mas importante y lo metemos aqui.
+// En lugar de saturar la memoria con basura, extraemos lo mas importante y lo metemos aqui.
 struct PaqueteCapturado {
     int            id;          // Numero de paquete en la lista
     pcap_pkthdr    header;      // Metadatos de libpcap (hora en que llego, tamano en bytes)
@@ -41,15 +49,15 @@ struct PaqueteCapturado {
     uint8_t        tcp_flags;   // Banderas TCP crudas en 8 bits (SYN, ACK, FIN, etc)
     uint16_t       checksum;    // Suma de comprobacion para detectar errores
     int            link_offset; // Variable clave: 14 bytes si es Ethernet normal, 16 si es interfaz loopback
-    int            ip_version;  // Etiqueta invisible: 4 si es IPv4, 6 si es IPv6, 0 si es otro (ARP)
+    int            ip_version;  // Etiqueta invisible: 4 si es IPv4, 6 si es IPv6, 0 si es otro (ej. ARP)
 };
 
 
 // --- 3. VARIABLES GLOBALES ---
 
-vector<PaqueteCapturado> historial_paquetes; // Arreglo que guarda todos los paquetes capturados
+vector<PaqueteCapturado> historial_paquetes; // Arreglo dinamico que guarda todos los paquetes capturados
 int     contador_paquetes = 0;               // Lleva la cuenta de cuantos llevamos
-bool    capturando        = false;           // Bandera para saber si el motor esta activo
+bool    capturando        = false;           // Bandera para saber si el motor esta escuchando
 pcap_t *handle_global     = nullptr;         // Puntero maestro que mantiene la tarjeta de red abierta
 std::mutex mtx_paquetes;                     // Candado de memoria para evitar que la interfaz y la captura choquen
 
@@ -72,15 +80,16 @@ public:
     QTextEdit *textoArea2;
     QTextEdit *textoArea3;
     
+    // Controles unificados de Filtro (Sirven para Captura BPF y para Vista)
     QComboBox *comboInterfaces;
     QComboBox *comboProtocolo;
-    QComboBox *comboDirIP;     
-    QComboBox *comboDirPto;    
-    QLineEdit *txtIP;
-    QLineEdit *txtPuerto;
+    QLineEdit *txtIpOrigen;
+    QLineEdit *txtIpDestino;
+    QLineEdit *txtPtoOrigen;
+    QLineEdit *txtPtoDestino;
     
+    // Cuadro secundario solo para buscar texto especifico en la tabla
     QLineEdit *txtBusquedaRapida;
-    QComboBox *comboFiltroVista;
     
     QPushButton *btnCapturar;
     QPushButton *btnPausar;    
@@ -90,10 +99,10 @@ public:
     QCheckBox   *chkAutoScroll; 
 
     std::thread hiloCaptura; // Objeto del hilo asincrono
-    int link_offset;         // Tamano de la cabecera de la tarjeta actual
-    bool pausado;            // Estado de la pausa
+    int link_offset;         // Tamano de la cabecera de la tarjeta actual segun pcap_datalink
+    bool pausado;            // Estado logico de la pausa
 
-    // Prototipos de los metodos de esta clase (la logica fuerte va abajo)
+    // Prototipos de los metodos de esta clase (la logica fuerte va en la seccion 7)
     VentanaSniffer(); 
     void aplicarFiltroVista();
     void agregarFilaDesdeHilo(const PaqueteCapturado &p);
@@ -106,13 +115,13 @@ public:
 int main(int argc, char *argv[]) {
     // Inicializamos el motor grafico de Qt
     QApplication app(argc, argv);
-    app.setStyle("Fusion"); // Obligamos a que el estilo base sea plano y moderno
+    app.setStyle("Fusion"); // Obligamos a que el estilo base sea plano y moderno en Linux
     
     // Instanciamos la clase que definimos arriba
     VentanaSniffer ventana;
     ventana.show();
     
-    // app.exec() se queda en un ciclo infinito escuchando los clicks del mouse del usuario
+    // app.exec() bloquea el main en un ciclo infinito escuchando eventos de la ventana
     return app.exec();
 }
 
@@ -124,23 +133,23 @@ VentanaSniffer::VentanaSniffer() {
     link_offset = 14; 
     pausado = false;
     
-    setWindowTitle("Packet Sniffer Pro");
+    setWindowTitle("Packet Sniffer");
     resize(1300, 850);
     
-    // Aplicamos CSS crudo para darle estilo oscuro moderno
+    // Aplicamos CSS crudo para darle estilo oscuro moderno a toda la app
     this->setStyleSheet(R"(
         QMainWindow { background-color: #1e1e1e; }
-        QLabel { color: #cccccc; font-weight: normal; font-size: 11px; }
+        QLabel { color: #cccccc; font-weight: normal; font-size: 11px; text-transform: uppercase; }
         QTableWidget { background-color: #1e1e1e; color: #d4d4d4; gridline-color: #3f3f46; border: 1px solid #3f3f46; border-radius: 4px; selection-background-color: #04395e; selection-color: #ffffff; outline: 0; font-family: 'Segoe UI', Arial; }
         QTableWidget::item:selected { background-color: #04395e; }
         QHeaderView::section { background-color: #2d2d30; color: #ffffff; font-weight: bold; border: 1px solid #3f3f46; padding: 4px; }
         QPushButton { background-color: #0e639c; color: #ffffff; font-weight: normal; border-radius: 4px; padding: 6px 15px; border: none; }
         QPushButton:hover { background-color: #1177bb; }
-        QPushButton#btnIniciar { background-color: #238636; } 
+        QPushButton#btnIniciar { background-color: #238636; font-weight: bold; } 
         QPushButton#btnIniciar:hover { background-color: #2ea043; }
-        QPushButton#btnDetener { background-color: #da3633; } 
+        QPushButton#btnDetener { background-color: #da3633; font-weight: bold; } 
         QPushButton#btnDetener:hover { background-color: #f85149; }
-        QPushButton#btnPausar { background-color: #d29922; } 
+        QPushButton#btnPausar { background-color: #d29922; font-weight: bold; } 
         QPushButton#btnPausar:hover { background-color: #e3a92b; }
         QPushButton#btnPausar:disabled { background-color: #30363d; color: #8b949e; }
         QPushButton#btnExport { background-color: #21262d; border: 1px solid #30363d; } 
@@ -167,11 +176,11 @@ VentanaSniffer::VentanaSniffer() {
     QWidget *centralWidget = new QWidget(this);
     QVBoxLayout *layoutPrincipal = new QVBoxLayout(centralWidget);
 
-    // Barra 1: Controles para iniciar la captura en la tarjeta fisica
+    // Barra 1: Filtros unificados que dictan el BPF y actuan como filtro en vivo
     QHBoxLayout *layoutTop = new QHBoxLayout();
     
     // Obtenemos dinamicamente que tarjetas de red tiene tu compu
-    comboInterfaces = new QComboBox(); comboInterfaces->setMinimumWidth(110);
+    comboInterfaces = new QComboBox(); comboInterfaces->setMinimumWidth(100);
     char errbuf[PCAP_ERRBUF_SIZE]; pcap_if_t *alldevs, *d;
     if (pcap_findalldevs(&alldevs, errbuf) == 0) {
         for (d = alldevs; d; d = d->next) comboInterfaces->addItem(d->name);
@@ -181,45 +190,46 @@ VentanaSniffer::VentanaSniffer() {
     comboProtocolo = new QComboBox(); 
     comboProtocolo->addItems({"TODOS", "Solo IPv4", "Solo IPv6", "Solo TCP", "Solo UDP", "Solo ICMP", "Solo ARP"});
     
-    comboDirIP = new QComboBox(); comboDirIP->addItems({"Cualquier IP", "IP Origen", "IP Destino"});
-    txtIP = new QLineEdit(); txtIP->setPlaceholderText("192.168.1.1"); txtIP->setFixedWidth(110);
-    comboDirPto = new QComboBox(); comboDirPto->addItems({"Cualquier Pto", "Pto Origen", "Pto Destino"});
-    txtPuerto = new QLineEdit(); txtPuerto->setPlaceholderText("Ej: 80"); txtPuerto->setFixedWidth(60);
+    // Cajas de texto separadas para combinaciones avanzadas
+    txtIpOrigen = new QLineEdit(); txtIpOrigen->setPlaceholderText("IP Origen"); txtIpOrigen->setFixedWidth(120);
+    txtIpDestino = new QLineEdit(); txtIpDestino->setPlaceholderText("IP Destino"); txtIpDestino->setFixedWidth(120);
+    txtPtoOrigen = new QLineEdit(); txtPtoOrigen->setPlaceholderText("Pto Orig"); txtPtoOrigen->setFixedWidth(65);
+    txtPtoDestino = new QLineEdit(); txtPtoDestino->setPlaceholderText("Pto Dest"); txtPtoDestino->setFixedWidth(65);
 
     btnCapturar = new QPushButton("NUEVA CAPTURA"); btnCapturar->setObjectName("btnIniciar");
     btnPausar = new QPushButton("PAUSAR"); btnPausar->setObjectName("btnPausar"); btnPausar->setEnabled(false); 
     btnExportar = new QPushButton("CSV"); btnExportar->setObjectName("btnExport");
 
-    layoutTop->addWidget(comboInterfaces); layoutTop->addSpacing(10);
-    layoutTop->addWidget(comboProtocolo); layoutTop->addSpacing(10);
-    layoutTop->addWidget(comboDirIP); layoutTop->addWidget(txtIP); layoutTop->addSpacing(10);
-    layoutTop->addWidget(comboDirPto); layoutTop->addWidget(txtPuerto); layoutTop->addStretch();
-    layoutTop->addWidget(btnCapturar); layoutTop->addWidget(btnPausar); layoutTop->addWidget(btnExportar);
+    layoutTop->addWidget(comboInterfaces); 
+    layoutTop->addWidget(comboProtocolo); 
+    layoutTop->addWidget(txtIpOrigen); 
+    layoutTop->addWidget(txtIpDestino); 
+    layoutTop->addWidget(txtPtoOrigen); 
+    layoutTop->addWidget(txtPtoDestino); 
+    layoutTop->addStretch(); // Empuja los botones a la derecha
+    layoutTop->addWidget(btnCapturar); 
+    layoutTop->addWidget(btnPausar); 
+    layoutTop->addWidget(btnExportar);
     
     layoutPrincipal->addLayout(layoutTop);
 
-    // Barra 2: Controles logicos para buscar en la lista ya procesada
+    // Barra 2: Cuadro secundario para busqueda pura de texto en el historial
     QHBoxLayout *layoutFiltroVista = new QHBoxLayout();
-    txtBusquedaRapida = new QLineEdit(); txtBusquedaRapida->setPlaceholderText("Buscar por IP, Puerto, Protocolo..."); txtBusquedaRapida->setMinimumWidth(300);
-    comboFiltroVista = new QComboBox();
-    comboFiltroVista->addItems({"Mostrar Todos", "Solo IPv4", "Solo IPv6", "Solo TCP", "Solo UDP", "Solo ICMP", "Solo ARP"});
+    txtBusquedaRapida = new QLineEdit(); 
+    txtBusquedaRapida->setPlaceholderText("Busqueda de texto (Ej. youtube, HTTP, 192.168...)"); 
     
     layoutFiltroVista->addWidget(new QLabel("BUSCAR EN CAPTURADOS:"));
     layoutFiltroVista->addWidget(txtBusquedaRapida);
-    layoutFiltroVista->addSpacing(20);
-    layoutFiltroVista->addWidget(new QLabel("FILTRO RAPIDO:"));
-    layoutFiltroVista->addWidget(comboFiltroVista);
-    layoutFiltroVista->addStretch();
     layoutPrincipal->addLayout(layoutFiltroVista);
 
-    // Paneles: Division vertical principal
+    // Paneles: Division vertical principal arrastrable
     QSplitter *splitterPrincipal = new QSplitter(Qt::Vertical);
     
     QWidget *topWidget = new QWidget();
     QVBoxLayout *topLayout = new QVBoxLayout(topWidget);
     topLayout->setContentsMargins(0, 0, 0, 0);
 
-    // Creacion de la tabla y ajuste de columnas
+    // Creacion de la tabla y ajuste inteligente del ancho de las columnas
     tablaArea1 = new QTableWidget(0, 8);
     tablaArea1->setHorizontalHeaderLabels({"ID", "Hora", "Proto", "IP Origen", "PtoS", "IP Destino", "PtoD", "Bytes"});
     tablaArea1->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -268,13 +278,17 @@ VentanaSniffer::VentanaSniffer() {
     setCentralWidget(centralWidget);
 
 
-    // Conexiones de Eventos
+    // --- ENLACE DE EVENTOS (SIGNALS & SLOTS) ---
     
-    // Cada que el usuario escribe, llamamos a la funcion de filtrado
+    // Unimos TODOS los cuadros de texto de arriba al motor de filtro en vivo
+    connect(comboProtocolo, &QComboBox::currentTextChanged, this, &VentanaSniffer::aplicarFiltroVista);
+    connect(txtIpOrigen, &QLineEdit::textChanged, this, &VentanaSniffer::aplicarFiltroVista);
+    connect(txtIpDestino, &QLineEdit::textChanged, this, &VentanaSniffer::aplicarFiltroVista);
+    connect(txtPtoOrigen, &QLineEdit::textChanged, this, &VentanaSniffer::aplicarFiltroVista);
+    connect(txtPtoDestino, &QLineEdit::textChanged, this, &VentanaSniffer::aplicarFiltroVista);
     connect(txtBusquedaRapida, &QLineEdit::textChanged, this, &VentanaSniffer::aplicarFiltroVista);
-    connect(comboFiltroVista, &QComboBox::currentTextChanged, this, &VentanaSniffer::aplicarFiltroVista);
 
-    // Cuando el usuario toca una fila, jalamos los datos crudos y generamos el HTML
+    // Cuando el usuario toca una fila, extraemos la info limpia y el hex
     connect(tablaArea1, &QTableWidget::itemSelectionChanged, [this]() {
         int fila = tablaArea1->currentRow();
         if (fila >= 0) {
@@ -286,7 +300,7 @@ VentanaSniffer::VentanaSniffer() {
         }
     });
 
-    // Subir en la tabla ignorando filas que esten ocultas por el filtro
+    // Subir en la tabla ignorando filas que esten ocultas por el filtro actual
     connect(btnAnterior, &QPushButton::clicked, [this]() {
         int f = tablaArea1->currentRow();
         while (f > 0) {
@@ -304,7 +318,7 @@ VentanaSniffer::VentanaSniffer() {
         }
     });
 
-    // Boton de Capturar: Mata la captura existente o arranca una limpia de cero
+    // Boton de Capturar: Mata la captura existente o arranca una nueva inyectando el BPF
     connect(btnCapturar, &QPushButton::clicked, [this]() {
         if (capturando || pausado) {
             capturando = false; pausado = false;
@@ -315,25 +329,25 @@ VentanaSniffer::VentanaSniffer() {
             btnCapturar->setText("NUEVA CAPTURA"); btnCapturar->setObjectName("btnIniciar"); 
             this->setStyleSheet(this->styleSheet()); 
             btnPausar->setEnabled(false); btnPausar->setText("PAUSAR");
-            comboInterfaces->setEnabled(true); comboProtocolo->setEnabled(true);
-            comboDirIP->setEnabled(true); txtIP->setEnabled(true);
-            comboDirPto->setEnabled(true); txtPuerto->setEnabled(true);
+            comboInterfaces->setEnabled(true);
+            
+            // Refrescamos la tabla por si quedaron paquetes ocultos por los filtros en la pausa
+            aplicarFiltroVista(); 
         } else {
             tablaArea1->setRowCount(0); historial_paquetes.clear(); 
             contador_paquetes = 0; pausado = false;
             
+            // Toma los datos escritos en la barra y los convierte en BPF real
             if (iniciarCapturaHilo()) {
                 btnCapturar->setText("DETENER"); btnCapturar->setObjectName("btnDetener"); 
                 this->setStyleSheet(this->styleSheet()); 
                 btnPausar->setEnabled(true); btnPausar->setText("PAUSAR");
-                comboInterfaces->setEnabled(false); comboProtocolo->setEnabled(false);
-                comboDirIP->setEnabled(false); txtIP->setEnabled(false);
-                comboDirPto->setEnabled(false); txtPuerto->setEnabled(false);
+                comboInterfaces->setEnabled(false);
             }
         }
     });
 
-    // Boton de Pausar: Detiene la escucha pero no borra la tabla actual
+    // Boton de Pausar: Detiene la escucha pero permite seguir filtrando los datos ya obtenidos
     connect(btnPausar, &QPushButton::clicked, [this]() {
         if (capturando && !pausado) {
             capturando = false; pausado = true;
@@ -342,6 +356,7 @@ VentanaSniffer::VentanaSniffer() {
             if (handle_global) { pcap_close(handle_global); handle_global = nullptr; }
             btnPausar->setText("REANUDAR");
         } else if (pausado) {
+            // Reanudar toma la interfaz de red y vuelve a pegarle los BPF para seguir escuchando
             if (iniciarCapturaHilo()) { pausado = false; btnPausar->setText("PAUSAR"); }
         }
     });
@@ -356,6 +371,7 @@ VentanaSniffer::VentanaSniffer() {
         if (f.is_open()) {
             f << "ID,Timestamp,Protocolo,IP_Origen,Puerto_Origen,IP_Destino,Puerto_Destino,Flags_TCP,Checksum,Longitud\n";
             std::lock_guard<std::mutex> lock(mtx_paquetes);
+            // Iteramos sobre todos sin importar si estan ocultos o no, se exporta todo el historial
             for (const auto &p : historial_paquetes) {
                 f << p.id << "," << p.timestamp << "," << p.protocol << "," << p.src_ip << "," << p.src_port << "," 
                   << p.dst_ip << "," << p.dst_port << "," << flags_tcp_str(p.tcp_flags) << "," << p.checksum << "," << p.header.len << "\n";
@@ -367,10 +383,14 @@ VentanaSniffer::VentanaSniffer() {
 }
 
 
-// Recorre toda la tabla y esconde/muestra filas segun lo escrito por el usuario
+// Motor de filtrado en vivo. Lee los cuadros de texto unificados y oculta las filas que no cumplan
 void VentanaSniffer::aplicarFiltroVista() {
+    QString protocoloFiltro = comboProtocolo->currentText();
+    QString ipSrc = txtIpOrigen->text().trimmed();
+    QString ipDst = txtIpDestino->text().trimmed();
+    QString ptoSrc = txtPtoOrigen->text().trimmed();
+    QString ptoDst = txtPtoDestino->text().trimmed();
     QString textoBusqueda = txtBusquedaRapida->text().toLower();
-    QString protocoloFiltro = comboFiltroVista->currentText();
 
     std::lock_guard<std::mutex> lock(mtx_paquetes);
 
@@ -378,29 +398,45 @@ void VentanaSniffer::aplicarFiltroVista() {
         if (i >= historial_paquetes.size()) break; 
         const PaqueteCapturado &p = historial_paquetes[i];
         
-        bool coincideTexto = textoBusqueda.isEmpty();
-        bool coincideProtocolo = true;
+        bool mostrar = true;
 
-        if (!coincideTexto) {
+        // 1. Validar el combo de protocolo utilizando nuestra etiqueta invisible ip_version
+        if (mostrar && protocoloFiltro != "TODOS") {
+            if (protocoloFiltro == "Solo TCP" && p.protocol != "TCP") mostrar = false;
+            else if (protocoloFiltro == "Solo UDP" && p.protocol != "UDP") mostrar = false;
+            else if (protocoloFiltro == "Solo ICMP" && p.protocol != "ICMP") mostrar = false;
+            else if (protocoloFiltro == "Solo ARP" && p.protocol != "ARP") mostrar = false;
+            else if (protocoloFiltro == "Solo IPv4" && p.ip_version != 4) mostrar = false;
+            else if (protocoloFiltro == "Solo IPv6" && p.ip_version != 6) mostrar = false;
+        }
+
+        // 2. Validar IP Origen
+        if (mostrar && !ipSrc.isEmpty() && p.src_ip != ipSrc.toStdString()) mostrar = false;
+        
+        // 3. Validar IP Destino
+        if (mostrar && !ipDst.isEmpty() && p.dst_ip != ipDst.toStdString()) mostrar = false;
+
+        // 4. Validar Puerto Origen
+        if (mostrar && !ptoSrc.isEmpty() && QString::number(p.src_port) != ptoSrc) mostrar = false;
+
+        // 5. Validar Puerto Destino
+        if (mostrar && !ptoDst.isEmpty() && QString::number(p.dst_port) != ptoDst) mostrar = false;
+
+        // 6. Validar texto libre en cualquier celda
+        if (mostrar && !textoBusqueda.isEmpty()) {
+            bool coincidenciaTexto = false;
             for (int col = 0; col < 8; ++col) {
                 QTableWidgetItem *item = tablaArea1->item(i, col);
                 if (item && item->text().toLower().contains(textoBusqueda)) {
-                    coincideTexto = true; break;
+                    coincidenciaTexto = true; 
+                    break;
                 }
             }
+            if (!coincidenciaTexto) mostrar = false;
         }
 
-        // Filtro estricto evaluando nuestra etiqueta invisible de version IP
-        if (protocoloFiltro != "Mostrar Todos") {
-            if (protocoloFiltro == "Solo TCP" && p.protocol != "TCP") coincideProtocolo = false;
-            else if (protocoloFiltro == "Solo UDP" && p.protocol != "UDP") coincideProtocolo = false;
-            else if (protocoloFiltro == "Solo ICMP" && p.protocol != "ICMP") coincideProtocolo = false;
-            else if (protocoloFiltro == "Solo ARP" && p.protocol != "ARP") coincideProtocolo = false;
-            else if (protocoloFiltro == "Solo IPv4" && p.ip_version != 4) coincideProtocolo = false;
-            else if (protocoloFiltro == "Solo IPv6" && p.ip_version != 6) coincideProtocolo = false;
-        }
-
-        tablaArea1->setRowHidden(i, !(coincideTexto && coincideProtocolo));
+        // Ejecutar la accion sobre la fila de la interfaz
+        tablaArea1->setRowHidden(i, !mostrar);
     }
 }
 
@@ -436,24 +472,32 @@ void VentanaSniffer::agregarFilaDesdeHilo(const PaqueteCapturado &p) {
         tablaArea1->setItem(row, col, item);
     }
     
-    // Revisamos si el nuevo paquete deberia ocultarse inmediatamente segun el filtro
+    // Verificamos si este paquete nuevo cumple con los filtros activos del usuario
+    QString protocoloFiltro = comboProtocolo->currentText();
+    QString ipSrc = txtIpOrigen->text().trimmed();
+    QString ipDst = txtIpDestino->text().trimmed();
+    QString ptoSrc = txtPtoOrigen->text().trimmed();
+    QString ptoDst = txtPtoDestino->text().trimmed();
     QString textoBusqueda = txtBusquedaRapida->text().toLower();
-    QString protocoloFiltro = comboFiltroVista->currentText();
     bool ocultar = false;
-    
-    if (!textoBusqueda.isEmpty()) {
-        bool found = false;
-        for(int col=0; col<8; ++col) { if (de[col].toLower().contains(textoBusqueda)) { found = true; break; } }
-        if (!found) ocultar = true;
-    }
-    
-    if (!ocultar && protocoloFiltro != "Mostrar Todos") {
+
+    if (!ocultar && protocoloFiltro != "TODOS") {
         if (protocoloFiltro == "Solo TCP" && p.protocol != "TCP") ocultar = true;
         else if (protocoloFiltro == "Solo UDP" && p.protocol != "UDP") ocultar = true;
         else if (protocoloFiltro == "Solo ICMP" && p.protocol != "ICMP") ocultar = true;
         else if (protocoloFiltro == "Solo ARP" && p.protocol != "ARP") ocultar = true;
         else if (protocoloFiltro == "Solo IPv4" && p.ip_version != 4) ocultar = true;
         else if (protocoloFiltro == "Solo IPv6" && p.ip_version != 6) ocultar = true;
+    }
+    if (!ocultar && !ipSrc.isEmpty() && p.src_ip != ipSrc.toStdString()) ocultar = true;
+    if (!ocultar && !ipDst.isEmpty() && p.dst_ip != ipDst.toStdString()) ocultar = true;
+    if (!ocultar && !ptoSrc.isEmpty() && QString::number(p.src_port) != ptoSrc) ocultar = true;
+    if (!ocultar && !ptoDst.isEmpty() && QString::number(p.dst_port) != ptoDst) ocultar = true;
+
+    if (!ocultar && !textoBusqueda.isEmpty()) {
+        bool found = false;
+        for(int col=0; col<8; ++col) { if (de[col].toLower().contains(textoBusqueda)) { found = true; break; } }
+        if (!found) ocultar = true;
     }
     
     tablaArea1->setRowHidden(row, ocultar);
@@ -464,7 +508,7 @@ void VentanaSniffer::agregarFilaDesdeHilo(const PaqueteCapturado &p) {
 }
 
 
-// Arranca la comunicacion con el driver del kernel
+// Arranca la comunicacion con el driver del kernel e inyecta el filtro BPF inicial
 bool VentanaSniffer::iniciarCapturaHilo() {
     QString dev = comboInterfaces->currentText();
     char errbuf[PCAP_ERRBUF_SIZE];
@@ -473,18 +517,18 @@ bool VentanaSniffer::iniciarCapturaHilo() {
     handle_global = pcap_open_live(dev.toStdString().c_str(), 65536, 1, 1000, errbuf);
     if (!handle_global) { QMessageBox::critical(this, "Error", QString("Fallo al abrir: %1").arg(errbuf)); return false; }
 
-    // Evaluacion del tipo de interfaz para evitar crasheos (Segmentation Faults)
+    // Evaluacion del tipo de interfaz para evitar crasheos de memoria leyendo headers incorrectos
     int linkType = pcap_datalink(handle_global);
-    if (linkType == DLT_EN10MB) link_offset = 14; // Ethernet comun
-    else if (linkType == DLT_LINUX_SLL) link_offset = 16; // Interfaz loopback o any en Linux
+    if (linkType == DLT_EN10MB) link_offset = 14; 
+    else if (linkType == DLT_LINUX_SLL) link_offset = 16; 
     else { QMessageBox::warning(this, "Error", "Interfaz no Ethernet detectada."); pcap_close(handle_global); handle_global = nullptr; return false; }
 
-    // Generador de cadenas de filtro BPF
+    // Generador dinamico de la regla BPF leyendo las cajas de texto
     QStringList partesFiltro;
     QString protoCombo = comboProtocolo->currentText();
     QString bpfProto = "";
     
-    // Traduccion de las opciones visuales a codigo que el kernel entienda
+    // Traduccion del texto al lenguaje de filtros que el kernel de Linux entiende
     if (protoCombo == "Solo IPv4") bpfProto = "ip";
     else if (protoCombo == "Solo IPv6") bpfProto = "ip6";
     else if (protoCombo == "Solo TCP") bpfProto = "tcp";
@@ -494,63 +538,53 @@ bool VentanaSniffer::iniciarCapturaHilo() {
 
     if (!bpfProto.isEmpty()) partesFiltro << "(" + bpfProto + ")";
     
-    QString ipStr = txtIP->text().trimmed();
-    if (!ipStr.isEmpty()) {
-        int iDir = comboDirIP->currentIndex();
-        if (iDir == 1) partesFiltro << "(src host " + ipStr + ")";
-        else if (iDir == 2) partesFiltro << "(dst host " + ipStr + ")";
-        else partesFiltro << "(host " + ipStr + ")";
-    }
+    // Anexamos las IPs y puertos si el usuario decidio rellenarlos antes de capturar
+    QString ipSrc = txtIpOrigen->text().trimmed();
+    if (!ipSrc.isEmpty()) partesFiltro << "(src host " + ipSrc + ")";
 
-    QString ptoStr = txtPuerto->text().trimmed();
-    if (!ptoStr.isEmpty()) {
-        int pDir = comboDirPto->currentIndex();
-        if (pDir == 1) partesFiltro << "(src port " + ptoStr + ")";
-        else if (pDir == 2) partesFiltro << "(dst port " + ptoStr + ")";
-        else partesFiltro << "(port " + ptoStr + ")";
-    }
+    QString ipDst = txtIpDestino->text().trimmed();
+    if (!ipDst.isEmpty()) partesFiltro << "(dst host " + ipDst + ")";
+
+    QString ptoSrc = txtPtoOrigen->text().trimmed();
+    if (!ptoSrc.isEmpty()) partesFiltro << "(src port " + ptoSrc + ")";
+
+    QString ptoDst = txtPtoDestino->text().trimmed();
+    if (!ptoDst.isEmpty()) partesFiltro << "(dst port " + ptoDst + ")";
     
     QString filtroStr = partesFiltro.join(" and ");
     struct bpf_program fcode;
     
-    // Compila el texto a opcodes binarios y se los inyecta a la tarjeta
+    // Compila el texto a opcodes binarios y se los inyecta a la tarjeta madre
     if (!filtroStr.isEmpty() && pcap_compile(handle_global, &fcode, filtroStr.toStdString().c_str(), 1, PCAP_NETMASK_UNKNOWN) >= 0) {
         pcap_setfilter(handle_global, &fcode);
     }
 
     capturando = true;
     
-    // Declaracion del hilo secundario (Thread)
+    // Creamos un hilo para que libpcap procese el trafico y no congele la ventana grafica
     hiloCaptura = std::thread([this]() {
         
-        // pcap_loop secuestra este hilo infinitamente atrapando paquetes
-        // Cuando llega uno, ejecuta esta funcion lambda ("[]()")
+        // Callback asincrono que el OS llama cada que entra voltaje por la tarjeta y pasa el filtro
         pcap_loop(handle_global, -1, [](u_char *user, const pcap_pkthdr *hdr, const u_char *pkt) {
             
-            // Casteamos la ventana principal para poder acceder a sus variables
             VentanaSniffer *ventana = reinterpret_cast<VentanaSniffer*>(user);
-            
-            // Si el paquete es mas pequeno que el encabezado base, es basura, lo ignoramos
             if (hdr->caplen < (unsigned)(ventana->link_offset)) return; 
 
-            // Formateo de la hora UNIX a texto legible
+            // Formateo de la hora UNIX a texto de reloj de pared
             char tbuf[20]; struct tm *tm_i = localtime(&hdr->ts.tv_sec); strftime(tbuf, sizeof(tbuf), "%H:%M:%S", tm_i);
             string ts = string(tbuf) + "." + to_string(hdr->ts.tv_usec / 1000);
 
-            // Creamos un molde limpio e inicializamos sus valores por defecto
             PaqueteCapturado p;
             p.link_offset = ventana->link_offset; p.header = *hdr; 
             p.data = vector<u_char>(pkt, pkt + hdr->caplen);
             p.protocol = "Otro"; p.src_port = 0; p.dst_port = 0; p.tcp_flags = 0; p.checksum = 0;
             p.timestamp = ts; p.ttl = 0; p.ip_id = 0; p.ip_version = 0; 
 
-            // Para saber que protocolo es, leemos el campo "EtherType" en los bytes 12-13 (si es Ethernet)
-            // Usamos ntohs (Network To Host Short) para ajustar el orden de bytes del procesador
             uint16_t ether_type = 0;
             if (ventana->link_offset == 14) ether_type = ntohs(((struct ether_header*)pkt)->ether_type);
             else if (ventana->link_offset == 16) ether_type = ntohs(*(uint16_t*)(pkt + 14));
 
-            // Si es 0x0806, el protocolo nativo es ARP
+            // Si es 0x0806, el protocolo nativo de capa 2 es un ARP
             if (ether_type == 0x0806 && hdr->caplen >= (unsigned)(ventana->link_offset + sizeof(ether_arp))) {
                 p.protocol = "ARP";
                 p.ip_version = 0; 
@@ -558,20 +592,18 @@ bool VentanaSniffer::iniciarCapturaHilo() {
                 p.src_ip = QString::asprintf("%d.%d.%d.%d", arp->arp_spa[0], arp->arp_spa[1], arp->arp_spa[2], arp->arp_spa[3]).toStdString();
                 p.dst_ip = QString::asprintf("%d.%d.%d.%d", arp->arp_tpa[0], arp->arp_tpa[1], arp->arp_tpa[2], arp->arp_tpa[3]).toStdString();
             
-            // Si es 0x86DD, es trafico moderno IPv6
+            // Si es 0x86DD decodifica las cabeceras IPv6
             } else if (ether_type == 0x86DD && hdr->caplen >= (unsigned)(ventana->link_offset + sizeof(ip6_hdr))) {
                 p.ip_version = 6; 
                 p.protocol = "IPv6"; 
                 struct ip6_hdr *ip6 = (struct ip6_hdr *)(pkt + ventana->link_offset);
                 char src_str[INET6_ADDRSTRLEN], dst_str[INET6_ADDRSTRLEN];
                 
-                // inet_ntop convierte binario crudo IPv6 a la representacion comun con dos puntos (::)
                 inet_ntop(AF_INET6, &ip6->ip6_src, src_str, sizeof(src_str));
                 inet_ntop(AF_INET6, &ip6->ip6_dst, dst_str, sizeof(dst_str));
                 p.src_ip = src_str;
                 p.dst_ip = dst_str;
 
-                // Verificamos si adentro del IPv6 viene un TCP o un UDP
                 if (ip6->ip6_nxt == IPPROTO_TCP && hdr->caplen >= (unsigned)(ventana->link_offset + sizeof(ip6_hdr) + 20)) {
                     p.protocol = "TCP";
                     struct tcphdr *th = (struct tcphdr*)(pkt + ventana->link_offset + sizeof(ip6_hdr));
@@ -585,18 +617,16 @@ bool VentanaSniffer::iniciarCapturaHilo() {
                     p.protocol = "ICMP";
                 }
 
-            // Si es 0x0800, es trafico estandar IPv4
+            // Si es 0x0800 decodifica las cabeceras IPv4
             } else if (ether_type == 0x0800 && hdr->caplen >= (unsigned)(ventana->link_offset + 20)) {
                 p.ip_version = 4; 
                 struct ip *iph = (struct ip*)(pkt + ventana->link_offset); 
-                p.src_ip = inet_ntoa(iph->ip_src); // inet_ntoa convierte a texto los 4 bloques
+                p.src_ip = inet_ntoa(iph->ip_src); 
                 p.dst_ip = inet_ntoa(iph->ip_dst);
                 p.ttl = iph->ip_ttl; p.ip_id = ntohs(iph->ip_id);
                 
-                // Calculamos el tamano dinamico del encabezado IP (IHL * 4 bytes)
                 int ihl = iph->ip_hl * 4;
 
-                // Evaluamos los protocolos de transporte que viajan encima de IP
                 if (iph->ip_p == IPPROTO_TCP) {
                     p.protocol = "TCP";
                     if (hdr->caplen >= (unsigned)(ventana->link_offset + ihl + 20)) {
@@ -615,7 +645,7 @@ bool VentanaSniffer::iniciarCapturaHilo() {
                 else p.protocol = "IPv4";
             }
 
-            // Guardamos el paquete en la memoria principal bloqueando a los demas hilos
+            // Bloqueamos la memoria critica, pusheamos a la RAM el paquete y la soltamos
             {
                 std::lock_guard<std::mutex> lock(mtx_paquetes);
                 contador_paquetes++;
@@ -623,10 +653,10 @@ bool VentanaSniffer::iniciarCapturaHilo() {
                 historial_paquetes.push_back(p);
             }
             
-            // Le indicamos al hilo de Qt (Interfaz Grafica) que procese la escritura a la pantalla
+            // Le pedimos al hilo de la ventana (Qt) que integre la nueva fila graficamente
             QMetaObject::invokeMethod(ventana, [ventana, p]() { ventana->agregarFilaDesdeHilo(p); }, Qt::QueuedConnection);
             
-        }, reinterpret_cast<u_char*>(this)); // Pasamos 'this' (la ventana) al callback
+        }, reinterpret_cast<u_char*>(this)); 
     });
     
     return true;
@@ -635,31 +665,30 @@ bool VentanaSniffer::iniciarCapturaHilo() {
 
 // --- 8. IMPLEMENTACION DE FUNCIONES AUXILIARES GLOBALES ---
 
-// Devuelve una cadena de texto en HTML dependiendo del byte evaluado
+// Extrae los 8 bits de control del encabezado TCP y los convierte a un string util
 string flags_tcp_str(uint8_t f) {
     string s;
-    if (f & 0x02) s += "SYN "; // Peticion de conexion
-    if (f & 0x10) s += "ACK "; // Acuse de recibo
-    if (f & 0x01) s += "FIN "; // Cierre de conexion
-    if (f & 0x04) s += "RST "; // Reseteo forzado
-    if (f & 0x08) s += "PSH "; // Push de datos
-    if (f & 0x20) s += "URG "; // Dato urgente
+    if (f & 0x02) s += "SYN "; 
+    if (f & 0x10) s += "ACK "; 
+    if (f & 0x01) s += "FIN "; 
+    if (f & 0x04) s += "RST "; 
+    if (f & 0x08) s += "PSH "; 
+    if (f & 0x20) s += "URG "; 
     return s.empty() ? "NONE" : s;
 }
 
-// Crea una fila de tabla en HTML con colores tipo Visual Studio Code
+// Generador dinamico de las filas estilo VS Code de los paneles inferiores
 QString filaTabla(QString titulo, QString valor, QString colorValor) {
     return QString("<tr><td style='padding: 4px 10px; background-color: #252526; border-bottom: 1px solid #333333; color: #858585; font-weight: bold; width: 130px;'>%1</td>"
                    "<td style='padding: 4px 10px; background-color: #1e1e1e; border-bottom: 1px solid #333333; color: %2;'>%3</td></tr>")
            .arg(titulo, colorValor, valor);
 }
 
-// Arma la tabla central que desglosa capa por capa (Enlace, Red y Transporte)
+// Analizador profundo que formatea las capas de red dependiendo de los datos crudos extraidos
 QString generar_area_2(const PaqueteCapturado &p) {
     QString out = QString("<h3 style='color:#cccccc; margin-bottom: 5px; font-weight: normal;'>Analisis del Paquete #%1</h3>").arg(p.id);
     out += "<table width='100%' cellspacing='0' cellpadding='0' style='font-family: \"Segoe UI\", sans-serif; font-size: 12px;'>";
 
-    // Capa 2: Decodificando Ethernet (Solo si el offset es 14)
     if (p.link_offset == 14 && p.data.size() >= 14) {
         auto *eth = (const ether_header*)p.data.data();
         out += "<tr><td colspan='2' style='background-color: #333333; color: #ffffff; padding: 5px; font-weight: bold;'>[Capa 2] ETHERNET</td></tr>";
@@ -671,7 +700,6 @@ QString generar_area_2(const PaqueteCapturado &p) {
         out += filaTabla("EtherType", QString("0x%1 (%2)").arg(QString::asprintf("%04X", et), tipoStr), "#dcdcaa");
     }
 
-    // Capa 3 para casos especiales como ARP
     if (p.protocol == "ARP" && p.data.size() >= (size_t)(p.link_offset + sizeof(ether_arp))) {
         auto *arp = (const struct ether_arp*)(p.data.data() + p.link_offset);
         out += "<tr><td colspan='2' style='background-color: #51504f; color: #ffffff; padding: 5px; font-weight: bold; margin-top: 10px;'>[Capa 3] ARP</td></tr>";
@@ -684,7 +712,6 @@ QString generar_area_2(const PaqueteCapturado &p) {
         out += filaTabla("IP Destino", QString::fromStdString(p.dst_ip), "#ce9178");
         out += filaTabla("MAC Destino", QString::asprintf("%02x:%02x:%02x:%02x:%02x:%02x", arp->arp_tha[0],arp->arp_tha[1],arp->arp_tha[2],arp->arp_tha[3],arp->arp_tha[4],arp->arp_tha[5]), "#b5cea8");
         
-    // Capa 3 y 4 para trafico IPv6
     } else if (p.ip_version == 6 && p.data.size() >= (size_t)(p.link_offset + sizeof(ip6_hdr))) {
         auto *ip6 = (const struct ip6_hdr*)(p.data.data() + p.link_offset);
         out += "<tr><td colspan='2' style='background-color: #0e639c; color: #ffffff; padding: 5px; font-weight: bold; margin-top: 10px;'>[Capa 3] IPv6</td></tr>";
@@ -707,7 +734,6 @@ QString generar_area_2(const PaqueteCapturado &p) {
             out += filaTabla("Puerto Destino", QString::number(p.dst_port), "#4fc1ff");
         }
         
-    // Capa 3 y 4 para trafico IPv4
     } else if (p.ip_version == 4 && p.data.size() >= (size_t)(p.link_offset + 20)) {
         auto *iph = (const struct ip*)(p.data.data() + p.link_offset);
         int ihl = iph->ip_hl * 4;
@@ -746,9 +772,9 @@ QString generar_area_2(const PaqueteCapturado &p) {
     return out;
 }
 
-// Extrae el paquete en puro hexadecimal y sus representaciones ASCII seguras
+// Convierte los bytes binarios a una matriz legible Hex-ASCII
 QString generar_area_3(const PaqueteCapturado &p) {
-    QString out = QString("<h3 style='color:#cccccc; margin-bottom: 5px; font-weight: normal;'>Volcado Hexadecimal - Paquete #%1</h3>").arg(p.id);
+    QString out = QString("<h3 style='color:#cccccc; margin-bottom: 5px; font-weight: normal;'>Hexadecimal RAW - Paquete #%1</h3>").arg(p.id);
     out += "<table width='100%' cellspacing='0' cellpadding='3' style='font-family: \"Consolas\", monospace; font-size: 12px;'>";
     out += "<tr style='background-color: #252526; color: #569cd6; text-align: left;'>"
            "<th style='width: 60px;'>Offset</th><th>Hexadecimal</th><th style='width: 150px;'>ASCII</th></tr>";
@@ -759,11 +785,10 @@ QString generar_area_3(const PaqueteCapturado &p) {
         QString asciiPart, hexPart;
         
         for (size_t j = 0; j < 16; j++) {
-            if (j == 8) hexPart += "&nbsp;&nbsp;"; // Doble espacio para separar bloques de 8 bytes
+            if (j == 8) hexPart += "&nbsp;&nbsp;"; 
             if (i+j < n) {
                 unsigned char c = p.data[i+j];
                 hexPart += QString("%1 ").arg(c, 2, 16, QChar('0')).toUpper();
-                // Limpieza del ASCII para evitar desastres visuales en HTML
                 char asciiChar = (c >= 32 && c < 127) ? c : '.';
                 if (asciiChar == '<') asciiPart += "&lt;";
                 else if (asciiChar == '>') asciiPart += "&gt;";
